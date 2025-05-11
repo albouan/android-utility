@@ -30,7 +30,7 @@ import androidx.core.view.WindowInsetsCompat;
  * It ensures content is displayed behind the system bars (status bar, navigation bar, etc.)
  * while dynamically adjusting padding and managing insets to avoid visual overlaps.
  *
- * Version: 1.8
+ * Version: 2.0
  * Date: 2025-05-11
  *
  * --- Technical Info ---
@@ -56,7 +56,7 @@ public final class EdgeToEdgeUtil {
 
     /**
      * Enables edge-to-edge mode on the given activity while adjusting for system insets.
-     * Defaults to excluding `WindowInsetsCompat.Type.ime()`.
+     * Defaults to excluding IME insets.
      *
      * @param activity the target Activity on which to apply the edge-to-edge mode; must not be null.
      */
@@ -67,7 +67,7 @@ public final class EdgeToEdgeUtil {
 
     /**
      * Enables edge-to-edge mode on the given activity while adjusting for system insets.
-     * Allows control over whether to include `WindowInsetsCompat.Type.ime()`.
+     * Allows control over whether to include IME insets.
      *
      * @param activity         the target Activity on which to apply the edge-to-edge mode; must not be null.
      * @param includeImeInsets whether to include IME (keyboard) insets in the adjustments.
@@ -87,9 +87,6 @@ public final class EdgeToEdgeUtil {
 
         // Configure insets behavior for API 30+.
         configureInsetsBehavior(window);
-
-        // Configure light status bars for API 23+.
-        configureLightStatusBars(window);
 
         // Retrieve the activity's root content view.
         final View contentView = activity.findViewById(android.R.id.content);
@@ -127,16 +124,6 @@ public final class EdgeToEdgeUtil {
         }
     }
 
-    // Configures light status bars for devices with API 23+.
-    private static void configureLightStatusBars(@NonNull Window window) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) { // API 23+
-            View decorView = window.getDecorView();
-            int systemUiVisibility = decorView.getSystemUiVisibility();
-            systemUiVisibility |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-            decorView.setSystemUiVisibility(systemUiVisibility);
-        }
-    }
-
     // Applies a listener to dynamically adjust insets and background.
     private static void applyInsetsListener(@NonNull View contentView, boolean includeImeInsets) {
         ViewCompat.setOnApplyWindowInsetsListener(contentView, new OnApplyWindowInsetsListener() {
@@ -144,11 +131,11 @@ public final class EdgeToEdgeUtil {
             @Override
             public WindowInsetsCompat onApplyWindowInsets(@NonNull View view,
                                                           @NonNull WindowInsetsCompat insets) {
-                // Combine the insets from system bars, display cutouts, and optionally IME.
+                // Combine the insets from system bars, display cutouts, and optionally IME insets.
                 int insetTypes = WindowInsetsCompat.Type.systemBars() |
                         WindowInsetsCompat.Type.displayCutout();
                 if (includeImeInsets) {
-                    insetTypes |= WindowInsetsCompat.Type.ime(); // Include IME insets if requested.
+                    insetTypes |= WindowInsetsCompat.Type.ime(); // Inline replacement for IME insets.
                 }
 
                 Insets safeInsets = insets.getInsets(insetTypes);
