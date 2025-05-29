@@ -29,7 +29,6 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -47,12 +46,8 @@ import java.util.Locale;
  *
  * <h2>Version</h2>
  * <ul>
- *   <li>1.0</li>
- * </ul>
- *
- * <h2>Date</h2>
- * <ul>
- *   <li>2025-05-27</li>
+ *   <li>1.1 (2025-05-29)</li>
+ *   <li>1.0 (2025-05-27)</li>
  * </ul>
  *
  * <h2>Features</h2>
@@ -147,13 +142,13 @@ public class FileManagerActivity extends AppCompatActivity {
             } else {
                 uris.add(data.getData());
             }
-            startCopyFileToAppDocumentsWithProgress(uris);
+            startCopyFileWithProgress(uris);
         });
 
         folderPickerLauncher = registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
             if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null) return;
             Uri treeUri = result.getData().getData();
-            startCopyFolderToAppDocumentsWithProgress(treeUri);
+            startCopyFolderWithProgress(treeUri);
         });
 
         deviceFolderPickerLauncher = registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
@@ -307,20 +302,31 @@ public class FileManagerActivity extends AppCompatActivity {
         }
     }
 
-    private void startCopyFileToAppDocumentsWithProgress(List<Uri> fileUris) {
+    private void startCopyFileWithProgress(List<Uri> fileUris) {
         showProgressDialog("Copying file(s)...");
         new Thread(() -> {
             final boolean[] error = {false};
-            for (Uri uri : fileUris) {
+            for (Uri fileUri : fileUris) {
                 if (cancelRequested) break;
-                String fileName = queryFileName(uri);
-                File destFile = new File(appDocumentsDir, fileName);
-                if (destFile.exists()) {
+                final String fileName = queryFileName(fileUri);
+                final File tempDestFile = new File(appDocumentsDir, "." + fileName + ".copying");
+                final File finalDestFile = new File(appDocumentsDir, fileName);
+                if (finalDestFile.exists() || tempDestFile.exists()) {
                     error[0] = true;
                     showFileExistsErrorOnMainThread(fileName);
                     break;
                 }
-                if (!copyFileToAppDocuments(uri, destFile)) {
+                boolean ok = copyFile(fileUri, tempDestFile);
+                boolean atomicSuccess = false;
+                if (ok && !cancelRequested) {
+                    atomicSuccess = tempDestFile.renameTo(finalDestFile);
+                    if (!atomicSuccess) {
+                        deleteRecursively(tempDestFile);
+                    }
+                } else {
+                    deleteRecursively(tempDestFile);
+                }
+                if (!ok || !atomicSuccess) {
                     error[0] = true;
                     break;
                 }
@@ -336,38 +342,32 @@ public class FileManagerActivity extends AppCompatActivity {
         }).start();
     }
 
-    private void startCopyFolderToAppDocumentsWithProgress(Uri treeUri) {
+    private void startCopyFolderWithProgress(Uri treeUri) {
         showProgressDialog("Copying folder...");
         new Thread(() -> {
             String folderName = queryDisplayNameFromTreeUri(treeUri);
             if (folderName == null) folderName = "ImportedFolder";
-            File tempRootDest = new File(appDocumentsDir, "." + folderName + ".copying");
-            File finalRootDest = new File(appDocumentsDir, folderName);
-            if (finalRootDest.exists() || tempRootDest.exists()) {
+            final File tempRootFolder = new File(appDocumentsDir, "." + folderName + ".copying");
+            final File finalRootFolder = new File(appDocumentsDir, folderName);
+            if (finalRootFolder.exists() || tempRootFolder.exists()) {
                 showFileExistsErrorOnMainThread(folderName);
                 runOnUiThread(this::dismissProgressDialog);
                 return;
             }
-            if (!tempRootDest.mkdirs()) {
+            if (!tempRootFolder.mkdirs()) {
                 showFileExistsErrorOnMainThread(folderName);
                 runOnUiThread(this::dismissProgressDialog);
                 return;
             }
-            boolean ok = false;
+            boolean ok = copyFolder(DocumentsContract.buildDocumentUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri)), tempRootFolder);
             boolean atomicSuccess = false;
-            try {
-                ok = copyFolderToAppDocuments(DocumentsContract.buildDocumentUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri)), tempRootDest, () -> cancelRequested);
-                if (ok && !cancelRequested) {
-                    atomicSuccess = tempRootDest.renameTo(finalRootDest);
-                    if (!atomicSuccess) {
-                        deleteRecursively(tempRootDest);
-                    }
-                } else {
-                    deleteRecursively(tempRootDest);
+            if (ok && !cancelRequested) {
+                atomicSuccess = tempRootFolder.renameTo(finalRootFolder);
+                if (!atomicSuccess) {
+                    deleteRecursively(tempRootFolder);
                 }
-            } catch (Exception e) {
-                deleteRecursively(tempRootDest);
-                runOnUiThread(() -> showOperationResultDialog("Copy Folder", "Folder copy failed: " + e.getMessage()));
+            } else {
+                deleteRecursively(tempRootFolder);
             }
             final boolean resultOk = ok;
             final boolean resultAtomic = atomicSuccess;
@@ -383,43 +383,30 @@ public class FileManagerActivity extends AppCompatActivity {
         }).start();
     }
 
-    private boolean copyFolderToAppDocuments(Uri treeUri, File destDir, CancelChecker cancelChecker) {
+    private boolean copyFolder(Uri treeUri, File destDir) {
         try {
-            ContentResolver cr = getContentResolver();
-            Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, DocumentsContract.getDocumentId(treeUri));
-            try (Cursor cursor = cr.query(childrenUri, new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE}, null, null, null)) {
-                while (cursor != null && cursor.moveToNext() && !cancelChecker.isCancelled()) {
-                    String childDocId = cursor.getString(0);
-                    String name = cursor.getString(1);
-                    String mimeType = cursor.getString(2);
-
-                    Uri childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childDocId);
+            final Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, DocumentsContract.getDocumentId(treeUri));
+            try (Cursor cursor = getContentResolver().query(childrenUri, new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE}, null, null, null)) {
+                while (cursor != null && cursor.moveToNext() && !cancelRequested) {
+                    final String childDocId = cursor.getString(0);
+                    final String name = cursor.getString(1);
+                    final String mimeType = cursor.getString(2);
+                    final Uri childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childDocId);
                     if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mimeType)) {
-                        File tempSubDir = new File(destDir, "." + name + ".copying");
-                        File subDir = new File(destDir, name);
-                        if (subDir.exists() || tempSubDir.exists()) {
+                        final File subDir = new File(destDir, name);
+                        if (subDir.exists()) {
                             showFileExistsErrorOnMainThread(name);
                             return false;
                         }
-                        if (!tempSubDir.mkdirs()) {
+                        if (!subDir.mkdirs()) {
                             showFileExistsErrorOnMainThread(name);
                             return false;
                         }
-                        boolean ok = copyFolderToAppDocuments(childUri, tempSubDir, cancelChecker);
-                        boolean atomicSuccess;
-                        if (ok && !cancelChecker.isCancelled()) {
-                            atomicSuccess = tempSubDir.renameTo(subDir);
-                            if (!atomicSuccess) {
-                                deleteRecursively(tempSubDir);
-                                return false;
-                            }
-                        } else {
-                            deleteRecursively(tempSubDir);
-                            return false;
-                        }
+                        final boolean ok = copyFolder(childUri, subDir);
+                        if (!ok || cancelRequested) return false;
                     } else {
-                        File destFile = new File(destDir, name);
-                        if (!copyFileToAppDocuments(childUri, destFile)) {
+                        final File destFile = new File(destDir, name);
+                        if (!copyFile(childUri, destFile)) {
                             return false;
                         }
                     }
@@ -432,12 +419,11 @@ public class FileManagerActivity extends AppCompatActivity {
         }
     }
 
-    private boolean copyFileToAppDocuments(Uri fileUri, File destFile) {
-        File tempFile = new File(destFile.getParentFile(), "." + destFile.getName() + ".copying");
+    private boolean copyFile(Uri fileUri, File destFile) {
         try (InputStream is = getContentResolver().openInputStream(fileUri)) {
             if (is == null) return false;
-            try (OutputStream os = new FileOutputStream(tempFile)) {
-                byte[] buffer = new byte[8192];
+            try (OutputStream os = new FileOutputStream(destFile)) {
+                final byte[] buffer = new byte[8192];
                 int len;
                 while ((len = is.read(buffer)) > 0) {
                     if (cancelRequested) throw new IOException("Cancelled");
@@ -445,31 +431,26 @@ public class FileManagerActivity extends AppCompatActivity {
                 }
                 os.flush();
             }
-            if (!cancelRequested) {
-                if (!tempFile.renameTo(destFile)) throw new IOException("Rename failed");
-                return true;
-            } else {
-                throw new IOException("Cancelled");
-            }
         } catch (Exception e) {
-            deleteRecursively(tempFile);
             runOnUiThread(() -> showOperationResultDialog("Copy File", "File copy failed: " + e.getMessage()));
             return false;
         }
+        return true;
     }
 
     private void startCopyFileToDeviceFolderWithProgress(File file, Uri treeUri) {
         showProgressDialog("Exporting file...");
         new Thread(() -> {
-            boolean exists = checkNameExistsInDeviceFolder(file.getName(), treeUri);
+            final String fileName = file.getName();
+            final boolean exists = checkNameExistsInDeviceFolder(fileName, treeUri);
             if (exists) {
                 runOnUiThread(() -> {
                     dismissProgressDialog();
-                    showFileExistsErrorOnMainThread(file.getName());
+                    showFileExistsErrorOnMainThread(fileName);
                 });
                 return;
             }
-            boolean result = copyFileToDeviceFolder(file, DocumentsContract.buildDocumentUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri)), () -> cancelRequested);
+            final boolean result = copyFileIntoDeviceFolder(file, DocumentsContract.buildDocumentUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri)));
             runOnUiThread(() -> {
                 dismissProgressDialog();
                 if (cancelRequested)
@@ -483,70 +464,68 @@ public class FileManagerActivity extends AppCompatActivity {
     private void startCopyFolderToDeviceFolderWithProgress(File folder, Uri treeUri) {
         showProgressDialog("Exporting folder...");
         new Thread(() -> {
-            String baseName = folder.getName();
-            boolean exists = checkNameExistsInDeviceFolder(baseName, treeUri);
+            final String folderName = folder.getName();
+            final boolean exists = checkNameExistsInDeviceFolder(folderName, treeUri);
             if (exists) {
                 runOnUiThread(() -> {
                     dismissProgressDialog();
-                    showFileExistsErrorOnMainThread(baseName);
+                    showFileExistsErrorOnMainThread(folderName);
                 });
                 return;
             }
-            final boolean[] result = {false};
-            try {
-                result[0] = copyFolderToDeviceFolder(folder, DocumentsContract.buildDocumentUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri)), () -> cancelRequested);
-            } catch (FileNotFoundException e) {
-                //
-            }
+            final boolean result = copyFolderIntoDeviceFolder(folder, DocumentsContract.buildDocumentUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri)));
             runOnUiThread(() -> {
                 dismissProgressDialog();
                 if (cancelRequested)
                     showOperationResultDialog("Export Folder", "Operation canceled.");
-                else if (!result[0]) showOperationResultDialog("Export Folder", "Export failed!");
+                else if (!result) showOperationResultDialog("Export Folder", "Export failed!");
                 else showOperationResultDialog("Export Folder", "Folder exported successfully!");
             });
         }).start();
     }
 
-    private boolean copyFolderToDeviceFolder(File folder, Uri folderUri, CancelChecker cancelChecker) throws FileNotFoundException {
-        if (cancelChecker.isCancelled()) return false;
-        ContentResolver cr = getContentResolver();
-        String folderName = folder.getName();
-        Uri subFolderUri = DocumentsContract.createDocument(cr, folderUri, DocumentsContract.Document.MIME_TYPE_DIR, folderName);
-        if (subFolderUri == null) {
-            runOnUiThread(() -> showOperationResultDialog("Export Folder", "Failed to create folder: " + folderName));
-            return false;
-        }
-        File[] children = folder.listFiles();
-        if (children == null) return true;
-        for (File file : children) {
-            if (cancelChecker.isCancelled()) break;
-            if (file.isDirectory()) {
-                boolean ok = copyFolderToDeviceFolder(file, subFolderUri, cancelChecker);
-                if (!ok || cancelChecker.isCancelled()) return false;
-            } else {
-                if (!copyFileToDeviceFolder(file, subFolderUri, cancelChecker)) {
-                    return false;
+    private boolean copyFolderIntoDeviceFolder(File folder, Uri treeUri) {
+        if (cancelRequested) return false;
+        final String folderName = folder.getName();
+        try {
+            final Uri folderUri = DocumentsContract.createDocument(getContentResolver(), treeUri, DocumentsContract.Document.MIME_TYPE_DIR, folderName);
+            if (folderUri == null) {
+                runOnUiThread(() -> showOperationResultDialog("Export Folder", "Failed to create folder: " + folderName));
+                return false;
+            }
+            final File[] children = folder.listFiles();
+            if (children == null) return true;
+            for (File child : children) {
+                if (cancelRequested) break;
+                if (child.isDirectory()) {
+                    final boolean ok = copyFolderIntoDeviceFolder(child, folderUri);
+                    if (!ok || cancelRequested) return false;
+                } else {
+                    if (!copyFileIntoDeviceFolder(child, folderUri)) {
+                        return false;
+                    }
                 }
             }
+            return true;
+        } catch (Exception e) {
+            runOnUiThread(() -> showOperationResultDialog("Export Folder", "Export failed: " + e.getMessage()));
+            return false;
         }
-        return true;
     }
 
-    private boolean copyFileToDeviceFolder(File file, Uri folderUri, CancelChecker cancelChecker) {
-        ContentResolver cr = getContentResolver();
-        String fileName = file.getName();
-        String mimeType = getMimeType(fileName);
-
+    private boolean copyFileIntoDeviceFolder(File file, Uri treeUri) {
+        final String fileName = file.getName();
+        final String mimeType = getMimeType(fileName);
         try {
-            Uri docUri = DocumentsContract.createDocument(cr, folderUri, mimeType, fileName);
+            final ContentResolver cr = getContentResolver();
+            final Uri docUri = DocumentsContract.createDocument(cr, treeUri, mimeType, fileName);
             if (docUri == null) throw new IOException("Failed to create document at destination");
             try (InputStream is = new FileInputStream(file); OutputStream os = cr.openOutputStream(docUri)) {
                 if (os == null) throw new IOException("Failed to open output stream to file");
-                byte[] buffer = new byte[8192];
+                final byte[] buffer = new byte[8192];
                 int len;
                 while ((len = is.read(buffer)) > 0) {
-                    if (cancelChecker.isCancelled()) throw new IOException("Cancelled");
+                    if (cancelRequested) throw new IOException("Cancelled");
                     os.write(buffer, 0, len);
                 }
                 os.flush();
@@ -754,9 +733,5 @@ public class FileManagerActivity extends AppCompatActivity {
                 this.textView = textView;
             }
         }
-    }
-
-    interface CancelChecker {
-        boolean isCancelled();
     }
 }
