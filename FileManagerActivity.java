@@ -24,6 +24,10 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
@@ -122,6 +126,8 @@ public class FileManagerActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+
         appDocumentsDir = new File(getExternalFilesDir(null), "Documents");
         if ((!appDocumentsDir.exists() && !appDocumentsDir.mkdirs()) || !appDocumentsDir.isDirectory()) {
             showErrorAndExit();
@@ -167,6 +173,17 @@ public class FileManagerActivity extends AppCompatActivity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(24), dp(24), dp(24), dp(24));
         root.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        ViewCompat.setOnApplyWindowInsetsListener(root, (v, insets) -> {
+            Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+            v.setPadding(
+                    dp(24) + systemBars.left,
+                    dp(24) + systemBars.top,
+                    dp(24) + systemBars.right,
+                    dp(24) + systemBars.bottom
+            );
+            return insets;
+        });
 
         Button btnCopyFile = new Button(this);
         btnCopyFile.setText("Copy File to App Documents");
