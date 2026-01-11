@@ -16,7 +16,6 @@ import android.view.PixelCopy;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
-import android.view.ViewTreeObserver;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.RequiresApi;
@@ -33,26 +32,40 @@ import androidx.core.view.WindowInsetsControllerCompat;
  * This class is designed to work with Android API levels 24 and above.
  * It ensures content is displayed behind the system bars (status bar, navigation bar, etc.)
  * while dynamically adjusting padding and managing insets to avoid visual overlaps.
- *
- * Version: 3.1
- * Date: 2026-01-06
- *
+ * <p>
+ * Version: 4.0
+ * Date: 2026-01-11
+ * <p>
  * --- Technical Info ---
  * - Target Audience: Android developers implementing edge-to-edge UI.
  * - Supported API Levels: 24 (Nougat) and above.
  * - Dependencies: AndroidX Core 1.6.0 or higher.
  * - Testing Recommendation: Test on devices/emulators running API levels 24, 28, and 30+.
- *
+ * <p>
  * --- Legal Info ---
  * - Author: GitHub Copilot (AI-powered coding assistant).
  * - License: Ensure compliance with your project's license (e.g., Apache 2.0).
  * - Disclaimer: This code is provided "as is" without warranty of any kind. The author assumes no responsibility for damages or issues arising from the use of this code.
  */
-@SuppressWarnings("deprecation")
+@SuppressWarnings({"deprecation", "RedundantSuppression"})
 public final class EdgeToEdgeUtil {
 
-    private static final int TAG_ORIGINAL_BACKGROUND = 0xDEADBEEF;
-    private static final int TAG_INITIAL_PADDING = 0xDEADBEF0;
+    // Using View.generateViewId() for setTag(int, Object) is not safe.
+    // The generated IDs are not guaranteed to be valid resource IDs.
+    // We use hardcoded values that are high enough to not conflict
+    // with AAPT-generated IDs (which start at 0x7f...).
+    private static final int TAG_ORIGINAL_BACKGROUND = 0x7E000000;
+    private static final int TAG_INITIAL_PADDING = 0x7E000001;
+    private static final int TAG_LAST_SYSTEM_BAR_INSETS = 0x7E000002;
+    private static final int TAG_UPDATE_APPEARANCE_RUNNABLE = 0x7E000003;
+
+    // limit pixel-sampling width to reduce memory/work on very wide displays
+    private static final int MAX_SAMPLE_WIDTH = 200;
+
+    // Luminance threshold for determining light/dark areas
+    private static final double LUMINANCE_THRESHOLD = 0.5;
+
+    private static final Handler MAIN_HANDLER = new Handler(Looper.getMainLooper());
 
     private EdgeToEdgeUtil() {
         throw new UnsupportedOperationException("Cannot instantiate utility class.");
@@ -73,11 +86,7 @@ public final class EdgeToEdgeUtil {
 
         // Store initial padding once so we don't clobber caller/layout padding.
         if (contentView.getTag(TAG_INITIAL_PADDING) == null) {
-            contentView.setTag(
-                    TAG_INITIAL_PADDING,
-                    new int[]{contentView.getPaddingLeft(), contentView.getPaddingTop(),
-                            contentView.getPaddingRight(), contentView.getPaddingBottom()}
-            );
+            contentView.setTag(TAG_INITIAL_PADDING, new int[]{contentView.getPaddingLeft(), contentView.getPaddingTop(), contentView.getPaddingRight(), contentView.getPaddingBottom()});
         }
 
         // Store original background and wrap it with insets. This is done only once.
@@ -107,10 +116,9 @@ public final class EdgeToEdgeUtil {
         // Configure cutout mode for devices with display cutouts (API 28+).
         configureCutoutMode(window);
 
-        WindowInsetsControllerCompat wic =
-                new WindowInsetsControllerCompat(window, window.getDecorView());
+        WindowInsetsControllerCompat wic = new WindowInsetsControllerCompat(window, window.getDecorView());
 
-        configureInsetsBehavior(window, wic);
+        configureInsetsBehavior(wic);
 
         applyInsetsListener(contentView, includeImeInsets, wic, window);
     }
@@ -118,38 +126,22 @@ public final class EdgeToEdgeUtil {
     private static void configureCutoutMode(@NonNull Window window) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             WindowManager.LayoutParams layoutParams = window.getAttributes();
-            layoutParams.layoutInDisplayCutoutMode =
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            layoutParams.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
             window.setAttributes(layoutParams);
         }
     }
 
-    private static void configureInsetsBehavior(@NonNull Window window,
-                                                @NonNull WindowInsetsControllerCompat insetsControllerCompat) {
+    private static void configureInsetsBehavior(@NonNull WindowInsetsControllerCompat insetsControllerCompat) {
         // Prefer WindowInsetsControllerCompat to avoid using deprecated platform APIs.
-        insetsControllerCompat.setSystemBarsBehavior(
-                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        insetsControllerCompat.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
     }
 
-    private static void applyInsetsListener(@NonNull View contentView,
-                                            boolean includeImeInsets,
-                                            @NonNull WindowInsetsControllerCompat wic,
-                                            @NonNull Window window) {
-        // Add a one-time listener to update the theme when the view is first drawn.
-        // This ensures we check the background color after everything is rendered.
-        contentView.getViewTreeObserver().addOnPreDrawListener(new ViewTreeObserver.OnPreDrawListener() {
-            @Override
-            public boolean onPreDraw() {
-                // The listener is one-shot, remove it after execution.
-                contentView.getViewTreeObserver().removeOnPreDrawListener(this);
-                updateSystemBarAppearance(window, wic);
-                return true;
-            }
-        });
+    private static void applyInsetsListener(@NonNull View contentView, boolean includeImeInsets, @NonNull WindowInsetsControllerCompat wic, @NonNull Window window) {
+        // The setOnApplyWindowInsetsListener is called when the view is first attached and
+        // whenever the window insets change, so a separate pre-draw listener is not required.
 
         ViewCompat.setOnApplyWindowInsetsListener(contentView, (view, insets) -> {
-            int insetTypes = WindowInsetsCompat.Type.systemBars() |
-                    WindowInsetsCompat.Type.displayCutout();
+            int insetTypes = WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout();
             if (includeImeInsets) {
                 insetTypes |= WindowInsetsCompat.Type.ime();
             }
@@ -168,32 +160,53 @@ public final class EdgeToEdgeUtil {
                 initialPadding = new int[]{0, 0, 0, 0};
             }
 
-            view.setPadding(
-                    initialPadding[0] + safeInsets.left,
-                    initialPadding[1] + safeInsets.top,
-                    initialPadding[2] + safeInsets.right,
-                    initialPadding[3] + safeInsets.bottom
-            );
+            view.setPadding(initialPadding[0] + safeInsets.left, initialPadding[1] + safeInsets.top, initialPadding[2] + safeInsets.right, initialPadding[3] + safeInsets.bottom);
 
-            // Post the appearance update to allow the background to be drawn first.
-            // This helps prevent flickering on initial launch.
-            view.post(() -> updateSystemBarAppearance(window, wic));
+            // Diff and throttle appearance updates.
+            // This prevents expensive updates during IME animations.
+            final Insets systemBarInsets = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+            Insets lastSystemBarInsets = (Insets) view.getTag(TAG_LAST_SYSTEM_BAR_INSETS);
+
+            if (lastSystemBarInsets == null || !lastSystemBarInsets.equals(systemBarInsets)) {
+                view.setTag(TAG_LAST_SYSTEM_BAR_INSETS, systemBarInsets);
+
+                Runnable existingRunnable = (Runnable) view.getTag(TAG_UPDATE_APPEARANCE_RUNNABLE);
+                if (existingRunnable != null) {
+                    MAIN_HANDLER.removeCallbacks(existingRunnable);
+                }
+
+                Runnable updateRunnable = () -> updateSystemBarAppearance(window, wic, insets);
+                view.setTag(TAG_UPDATE_APPEARANCE_RUNNABLE, updateRunnable);
+                // Post with a small delay to allow animations to settle.
+                MAIN_HANDLER.postDelayed(updateRunnable, 100L);
+            }
 
             // Don't indiscriminately consume all insets here; allow propagation.
             return insets;
         });
     }
 
-    private static void updateSystemBarAppearance(@NonNull Window window, @NonNull WindowInsetsControllerCompat wic) {
+    private static void updateSystemBarAppearance(@NonNull Window window, @NonNull WindowInsetsControllerCompat wic, @NonNull WindowInsetsCompat insets) {
+        View decorView = window.getDecorView();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            isAreaBehindSystemBarsLightPixelCopy(window, isLight -> {
+            int statusBarHeight = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top;
+            isAreaBehindSystemBarsLightPixelCopy(window, true, statusBarHeight, isLight -> {
                 wic.setAppearanceLightStatusBars(isLight);
-                wic.setAppearanceLightNavigationBars(isLight);
             });
+
+            int navBarHeight = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom;
+            if (navBarHeight > 0) {
+                isAreaBehindSystemBarsLightPixelCopy(window, false, navBarHeight, isLight -> {
+                    wic.setAppearanceLightNavigationBars(isLight);
+                });
+            }
         } else {
-            boolean isLight = isAreaBehindSystemBarsLightDrawingCache(window.getDecorView());
-            wic.setAppearanceLightStatusBars(isLight);
-            wic.setAppearanceLightNavigationBars(isLight);
+            // Fallback for older APIs is less reliable but we can still check top and bottom.
+            boolean isStatusBarLight = isAreaBehindSystemBarsLightDrawingCache(decorView, true);
+            wic.setAppearanceLightStatusBars(isStatusBarLight);
+
+            boolean isNavBarLight = isAreaBehindSystemBarsLightDrawingCache(decorView, false);
+            wic.setAppearanceLightNavigationBars(isNavBarLight);
         }
     }
 
@@ -205,142 +218,91 @@ public final class EdgeToEdgeUtil {
     }
 
     /**
-     * Asynchronously determines if the area behind the status bar is light using PixelCopy.
+     * Asynchronously determines if the area behind the system bars is light using PixelCopy.
      * This is the preferred method for API 26+.
      */
     @RequiresApi(api = Build.VERSION_CODES.O)
-    private static void isAreaBehindSystemBarsLightPixelCopy(@NonNull Window window, @NonNull OnIsLightCallback callback) {
+    private static void isAreaBehindSystemBarsLightPixelCopy(@NonNull Window window, boolean isTop, int barHeight, @NonNull OnIsLightCallback callback) {
         View decorView = window.getDecorView();
-        if (decorView.getWidth() == 0 || decorView.getHeight() == 0) {
+        if (decorView.getWidth() == 0 || decorView.getHeight() == 0 || barHeight <= 0) {
             callback.onResult(false);
             return;
         }
 
-        int checkWidth = decorView.getWidth();
-        int checkHeight = 1; // A single pixel high strip is enough.
+        int fullWidth = decorView.getWidth();
+        int sampleWidth = Math.min(fullWidth, MAX_SAMPLE_WIDTH);
+        int startX = Math.max(0, (fullWidth - sampleWidth) / 2);
+        int checkHeight = 4; // Sample a thicker line for more reliable results.
 
-        Bitmap bitmap = Bitmap.createBitmap(checkWidth, checkHeight, Bitmap.Config.ARGB_8888);
+        Bitmap bitmap = Bitmap.createBitmap(sampleWidth, checkHeight, Bitmap.Config.ARGB_8888);
         int[] location = new int[2];
         decorView.getLocationInWindow(location);
 
-        PixelCopy.request(window,
-                new android.graphics.Rect(location[0], location[1], location[0] + checkWidth, location[1] + checkHeight),
-                bitmap,
-                copyResult -> {
-                    if (copyResult == PixelCopy.SUCCESS) {
-                        double totalLuminance = 0;
-                        int[] pixels = new int[checkWidth];
-                        bitmap.getPixels(pixels, 0, checkWidth, 0, 0, checkWidth, 1);
-                        for (int color : pixels) {
-                            totalLuminance += ColorUtils.calculateLuminance(color);
-                        }
-                        callback.onResult((totalLuminance / checkWidth) > 0.5);
-                    } else {
-                        callback.onResult(false); // Default to dark on failure
-                    }
-                    bitmap.recycle();
-                },
-                new Handler(Looper.getMainLooper()));
+        int yPos = isTop ? location[1] : location[1] + decorView.getHeight() - barHeight;
+
+        android.graphics.Rect srcRect = new android.graphics.Rect(location[0] + startX, yPos, location[0] + startX + sampleWidth, yPos + checkHeight);
+
+        PixelCopy.request(window, srcRect, bitmap, copyResult -> {
+            if (copyResult == PixelCopy.SUCCESS) {
+                double totalLuminance = 0;
+                int pixelCount = sampleWidth * checkHeight;
+                int[] pixels = new int[pixelCount];
+                bitmap.getPixels(pixels, 0, sampleWidth, 0, 0, sampleWidth, checkHeight);
+                for (int color : pixels) {
+                    totalLuminance += ColorUtils.calculateLuminance(color);
+                }
+                callback.onResult((totalLuminance / pixelCount) > LUMINANCE_THRESHOLD);
+            } else {
+                // Consider: Log the failure reason for debugging
+                android.util.Log.w("EdgeToEdgeUtil", "PixelCopy failed: " + copyResult);
+                callback.onResult(false);
+            }
+            bitmap.recycle();
+        }, MAIN_HANDLER);
     }
 
     /**
-     * Determines if the area behind the status bar is light by analyzing the pixels of the DecorView
+     * Determines if the area behind the system bars is light by analyzing the pixels of the DecorView
      * using the deprecated drawing cache. Fallback for API < 26.
      *
      * @param decorView The window's decor view.
-     * @return {@code true} if the status bar area is light, {@code false} otherwise.
+     * @param isTop     True to check the top (status bar), false for the bottom (navigation bar).
+     * @return {@code true} if the system bar area is light, {@code false} otherwise.
      */
-    private static boolean isAreaBehindSystemBarsLightDrawingCache(@NonNull View decorView) {
+    private static boolean isAreaBehindSystemBarsLightDrawingCache(@NonNull View decorView, boolean isTop) {
         if (decorView.getWidth() == 0 || decorView.getHeight() == 0) {
-            return false; // View not laid out yet.
+            return false;
         }
 
-        // For performance, we'll check a small portion of the top of the view.
-        int checkWidth = decorView.getWidth();
-        int checkHeight = 1; // A single pixel high strip is enough.
+        int fullWidth = decorView.getWidth();
+        int sampleWidth = Math.min(fullWidth, MAX_SAMPLE_WIDTH);
+        int startX = Math.max(0, (fullWidth - sampleWidth) / 2);
+        int checkHeight = 4; // Sample a thicker line for more reliable results.
+        int yPos = isTop ? 0 : decorView.getHeight() - checkHeight;
 
         Bitmap bitmap = null;
         try {
-            // Use the drawing cache for speed, but ensure it's enabled and fresh.
-            decorView.setDrawingCacheEnabled(true);
-            decorView.buildDrawingCache(true);
-            Bitmap cache = decorView.getDrawingCache();
+            bitmap = Bitmap.createBitmap(sampleWidth, checkHeight, Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(bitmap);
+            canvas.translate(-startX, -yPos);
+            decorView.draw(canvas);
 
-            if (cache == null) return false;
-
-            // Create a small bitmap from the cache with the area we want to check.
-            bitmap = Bitmap.createBitmap(cache, 0, 0, checkWidth, checkHeight);
-
-            // Important: destroy the cache to free up memory and allow it to be rebuilt next time.
-            decorView.destroyDrawingCache();
-            decorView.setDrawingCacheEnabled(false);
-
-            int[] pixels = new int[checkWidth];
-            bitmap.getPixels(pixels, 0, checkWidth, 0, 0, checkWidth, 1);
+            int pixelCount = sampleWidth * checkHeight;
+            int[] pixels = new int[pixelCount];
+            bitmap.getPixels(pixels, 0, sampleWidth, 0, 0, sampleWidth, checkHeight);
 
             double totalLuminance = 0;
             for (int color : pixels) {
                 totalLuminance += ColorUtils.calculateLuminance(color);
             }
-
-            return (totalLuminance / checkWidth) > 0.5;
-
+            return (totalLuminance / pixelCount) > LUMINANCE_THRESHOLD;
         } catch (Exception e) {
-            return false; // Default to dark icons on failure.
+            // Log the exception to aid in debugging on older devices.
+            android.util.Log.w("EdgeToEdgeUtil", "Failed to check system bar contrast on API " + Build.VERSION.SDK_INT, e);
+            return false;
         } finally {
-            if (bitmap != null) {
-                bitmap.recycle();
-            }
+            if (bitmap != null) bitmap.recycle();
         }
-    }
-
-    private static boolean isBackgroundLight(Drawable background) {
-        if (background == null) {
-            return false; // Assume dark if no background.
-        }
-        if (background instanceof ColorDrawable) {
-            int color = ((ColorDrawable) background).getColor();
-            return ColorUtils.calculateLuminance(color) > 0.5;
-        } else if (background instanceof LayerDrawable) {
-            LayerDrawable layerDrawable = (LayerDrawable) background;
-            for (int i = 0; i < layerDrawable.getNumberOfLayers(); i++) {
-                Drawable layer = layerDrawable.getDrawable(i);
-                if (layer instanceof ColorDrawable && Color.alpha(((ColorDrawable) layer).getColor()) != 0) {
-                    return isBackgroundLight(layer);
-                } else if (layer instanceof BitmapDrawable) {
-                    return isBackgroundLight(layer);
-                }
-            }
-        } else if (background instanceof BitmapDrawable) {
-            Bitmap bitmap = ((BitmapDrawable) background).getBitmap();
-            if (bitmap == null || bitmap.isRecycled()) {
-                return false;
-            }
-            // For performance, we'll sample the top-center portion of the bitmap.
-            int width = bitmap.getWidth();
-            int height = bitmap.getHeight();
-            int sampleHeight = Math.min(height, 150); // Sample up to 150px from the top.
-
-            try {
-                Bitmap croppedBitmap = Bitmap.createBitmap(bitmap, 0, 0, width, sampleHeight);
-                double totalLuminance = 0;
-                int pixelCount = width * sampleHeight;
-
-                int[] pixels = new int[pixelCount];
-                croppedBitmap.getPixels(pixels, 0, width, 0, 0, width, sampleHeight);
-                croppedBitmap.recycle();
-
-                for (int color : pixels) {
-                    totalLuminance += ColorUtils.calculateLuminance(color);
-                }
-                return (totalLuminance / pixelCount) > 0.5;
-            } catch (Exception e) {
-                // Could be out of memory or bad arguments. Default to not-light.
-                return false;
-            }
-        }
-        // Default to "not light" if unknown; avoids forcing dark icons on potentially dark backgrounds.
-        return false;
     }
 
     private static boolean isDrawableTransparent(@NonNull Drawable drawable) {
@@ -358,7 +320,6 @@ public final class EdgeToEdgeUtil {
             }
             return true;
         } else if (drawable instanceof InsetDrawable) {
-            //noinspection deprecation
             Drawable innerDrawable = ((InsetDrawable) drawable).getDrawable();
             return innerDrawable != null && isDrawableTransparent(innerDrawable);
         }
