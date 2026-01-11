@@ -116,7 +116,8 @@ public final class EdgeToEdgeUtil {
         // Configure cutout mode for devices with display cutouts (API 28+).
         configureCutoutMode(window);
 
-        WindowInsetsControllerCompat wic = new WindowInsetsControllerCompat(window, window.getDecorView());
+        // Use the non-deprecated factory method to get the controller
+        WindowInsetsControllerCompat wic = WindowCompat.getInsetsController(window, window.getDecorView());
 
         configureInsetsBehavior(wic);
 
@@ -151,7 +152,12 @@ public final class EdgeToEdgeUtil {
             // Adjust the insets of the LayerDrawable background
             Drawable currentBackground = view.getBackground();
             if (currentBackground instanceof LayerDrawable) {
-                ((LayerDrawable) currentBackground).setLayerInset(0, safeInsets.left, safeInsets.top, safeInsets.right, safeInsets.bottom);
+                LayerDrawable ld = (LayerDrawable) currentBackground;
+                // Use non-deprecated setters for layer insets
+                ld.setLayerInsetLeft(0, safeInsets.left);
+                ld.setLayerInsetTop(0, safeInsets.top);
+                ld.setLayerInsetRight(0, safeInsets.right);
+                ld.setLayerInsetBottom(0, safeInsets.bottom);
             }
 
             // Add insets on top of the original padding (don't overwrite it).
