@@ -33,8 +33,8 @@ import androidx.core.view.WindowInsetsControllerCompat;
  * It ensures content is displayed behind the system bars (status bar, navigation bar, etc.)
  * while dynamically adjusting padding and managing insets to avoid visual overlaps.
  * <p>
- * Version: 4.0
- * Date: 2026-01-11
+ * Version: 4.1
+ * Date: 2026-02-12
  * <p>
  * --- Technical Info ---
  * - Target Audience: Android developers implementing edge-to-edge UI.
@@ -105,8 +105,10 @@ public final class EdgeToEdgeUtil {
         WindowCompat.setDecorFitsSystemWindows(window, false);
 
         // Make system bars transparent so content can be seen behind them.
-        window.setStatusBarColor(Color.TRANSPARENT);
-        window.setNavigationBarColor(Color.TRANSPARENT);
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            window.setStatusBarColor(Color.TRANSPARENT);
+            window.setNavigationBarColor(Color.TRANSPARENT);
+        }
 
         // On API 29+, disable auto dark navigation icons for transparent nav bars.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -195,16 +197,19 @@ public final class EdgeToEdgeUtil {
     private static void updateSystemBarAppearance(@NonNull Window window, @NonNull WindowInsetsControllerCompat wic, @NonNull WindowInsetsCompat insets) {
         View decorView = window.getDecorView();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            int statusBarHeight = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top;
-            isAreaBehindSystemBarsLightPixelCopy(window, true, statusBarHeight, isLight -> {
-                wic.setAppearanceLightStatusBars(isLight);
-            });
-
-            int navBarHeight = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom;
-            if (navBarHeight > 0) {
-                isAreaBehindSystemBarsLightPixelCopy(window, false, navBarHeight, isLight -> {
-                    wic.setAppearanceLightNavigationBars(isLight);
+            try {
+                int statusBarHeight = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top;
+                isAreaBehindSystemBarsLightPixelCopy(window, true, statusBarHeight, isLight -> {
+                    wic.setAppearanceLightStatusBars(isLight);
                 });
+
+                int navBarHeight = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom;
+                if (navBarHeight > 0) {
+                    isAreaBehindSystemBarsLightPixelCopy(window, false, navBarHeight, isLight -> {
+                        wic.setAppearanceLightNavigationBars(isLight);
+                    });
+                }
+            } catch (Exception ignored) {
             }
         } else {
             // Fallback for older APIs is less reliable but we can still check top and bottom.
