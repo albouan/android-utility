@@ -33,8 +33,8 @@ import androidx.core.view.WindowInsetsControllerCompat;
  * It ensures content is displayed behind the system bars (status bar, navigation bar, etc.)
  * while dynamically adjusting padding and managing insets to avoid visual overlaps.
  * <p>
- * Version: 4.1
- * Date: 2026-02-12
+ * Version: 4.2
+ * Date: 2026-02-13
  * <p>
  * --- Technical Info ---
  * - Target Audience: Android developers implementing edge-to-edge UI.
@@ -106,8 +106,8 @@ public final class EdgeToEdgeUtil {
 
         // Make system bars transparent so content can be seen behind them.
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-            window.setStatusBarColor(Color.TRANSPARENT);
-            window.setNavigationBarColor(Color.TRANSPARENT);
+            setStatusBarColorReflective(window, Color.TRANSPARENT);
+            setNavigationBarColorReflective(window, Color.TRANSPARENT);
         }
 
         // On API 29+, disable auto dark navigation icons for transparent nav bars.
@@ -127,10 +127,15 @@ public final class EdgeToEdgeUtil {
     }
 
     private static void configureCutoutMode(@NonNull Window window) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            WindowManager.LayoutParams layoutParams = window.getAttributes();
-            layoutParams.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
-            window.setAttributes(layoutParams);
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                int shortEdges = getLayoutInDisplayCutoutModeShortEdges();
+                if (shortEdges != -1) {
+                    WindowManager.LayoutParams layoutParams = window.getAttributes();
+                    layoutParams.layoutInDisplayCutoutMode = shortEdges;
+                    window.setAttributes(layoutParams);
+                }
+            }            
         }
     }
 
@@ -335,5 +340,31 @@ public final class EdgeToEdgeUtil {
             return innerDrawable != null && isDrawableTransparent(innerDrawable);
         }
         return false;
+    }
+
+    private static void setStatusBarColorReflective(@NonNull Window window, int color) {
+        try {
+            java.lang.reflect.Method m = Window.class.getMethod("setStatusBarColor", int.class);
+            m.invoke(window, color);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static void setNavigationBarColorReflective(@NonNull Window window, int color) {
+        try {
+            java.lang.reflect.Method m = Window.class.getMethod("setNavigationBarColor", int.class);
+            m.invoke(window, color);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static int getLayoutInDisplayCutoutModeShortEdges() {
+        try {
+            Class<?> lpClass = Class.forName("android.view.WindowManager$LayoutParams");
+            java.lang.reflect.Field f = lpClass.getField("LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES");
+            return f.getInt(null);
+        } catch (Exception ignored) {
+            return -1;
+        }
     }
 }
